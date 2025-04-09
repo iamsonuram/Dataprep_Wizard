@@ -4,4 +4,3 @@ openpyxl
 xlrd
 matplotlib
 seaborn
-io
