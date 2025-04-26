@@ -131,11 +131,11 @@ if uploaded_file:
                     df.columns = headers
                 else:
                     st.error("❌ Number of headers does not match number of columns!")
-        elif headers_suspect(df):
-            st.warning("🚨 Headers look suspicious (e.g., unnamed or numeric).")
-            update_headers = st.checkbox("Update column headers?")
-            if update_headers:
-                default_headers = [f"Column_{i}" for i in range(df.shape[1])]
+        else:
+            # Option to edit headers if they exist
+            edit_headers = st.checkbox("Edit column header names?")
+            if edit_headers:
+                default_headers = df.columns.tolist()
                 header_input = st.text_input(
                     f"Enter comma-separated headers for {df.shape[1]} columns:",
                     value=",".join(default_headers)
@@ -146,6 +146,21 @@ if uploaded_file:
                         df.columns = headers
                     else:
                         st.error("❌ Number of headers does not match number of columns!")
+            elif headers_suspect(df):
+                st.warning("🚨 Headers look suspicious (e.g., unnamed or numeric).")
+                update_headers = st.checkbox("Update column headers?")
+                if update_headers:
+                    default_headers = [f"Column_{i}" for i in range(df.shape[1])]
+                    header_input = st.text_input(
+                        f"Enter comma-separated headers for {df.shape[1]} columns:",
+                        value=",".join(default_headers)
+                    )
+                    if header_input:
+                        headers = [h.strip() for h in header_input.split(",")]
+                        if len(headers) == df.shape[1]:
+                            df.columns = headers
+                        else:
+                            st.error("❌ Number of headers does not match number of columns!")
 
         # Tabs for various views
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -268,6 +283,7 @@ if uploaded_file:
 
             # Constant Columns
             st.markdown("### 3. 🧱 Remove Constant Columns")
+            st.markdown("Removes columns with only one unique value (including NaN), as they provide no variability for analysis.")
             constant_cols = [col for col in df_clean.columns if df_clean[col].nunique(dropna=False) <= 1]
             if constant_cols:
                 selected_const_cols = st.multiselect(
@@ -282,6 +298,7 @@ if uploaded_file:
 
             # Object to Numeric Conversion
             st.markdown("### 4. 🔁 Convert Object Columns to Numeric (if possible)")
+            st.markdown("Converts string columns that contain numeric values (e.g., '123', '456.7') to numeric types for analysis.")
             object_cols = df_clean.select_dtypes(include='object').columns.tolist()
             convertible_cols = []
             for col in object_cols:
@@ -290,20 +307,53 @@ if uploaded_file:
                     convertible_cols.append(col)
                 except:
                     pass
-            if convertible_cols:
+            if object_cols:
+                st.write("Object columns (convertible to numeric are marked with *):")
+                display_cols = [f"{col}*" if col in convertible_cols else col for col in object_cols]
                 selected_obj_cols = st.multiselect(
                     "Select object columns to convert to numeric:",
-                    convertible_cols,
+                    display_cols,
                     key="obj_cols"
                 )
+                # Strip the * for actual column names
+                selected_obj_cols = [col.rstrip('*') for col in selected_obj_cols]
                 if st.button("Convert selected columns to numeric", key="convert_numeric"):
                     for col in selected_obj_cols:
                         try:
-                            df_clean[col] = pd.to_numeric(df_clean[col])
+                            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
                         except:
                             pass
             else:
-                st.info("No object columns can be converted to numeric.")
+                st.info("No object columns found.")
+
+            # Change Data Types
+            st.markdown("### 5. 🔄 Change Column Data Types")
+            st.markdown("View and modify the data type of each column. Preview shows the first few values.")
+            for col in df_clean.columns:
+                st.markdown(f"**Column: {col}**")
+                st.write(f"Current dtype: {df_clean[col].dtype}")
+                st.write("Preview:", df_clean[col].head().to_list())
+                new_dtype = st.selectbox(
+                    f"Select new dtype for '{col}':",
+                    ["No Change", "int", "float", "string", "boolean", "datetime", "category"],
+                    key=f"dtype_{col}"
+                )
+                if new_dtype != "No Change":
+                    try:
+                        if new_dtype == "int":
+                            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').astype('Int64')  # Nullable integer
+                        elif new_dtype == "float":
+                            df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+                        elif new_dtype == "string":
+                            df_clean[col] = df_clean[col].astype(str)
+                        elif new_dtype == "boolean":
+                            df_clean[col] = df_clean[col].map({'True': True, 'False': False, True: True, False: False, 1: True, 0: False}).astype('boolean')
+                        elif new_dtype == "datetime":
+                            df_clean[col] = pd.to_datetime(df_clean[col], errors='coerce')
+                        elif new_dtype == "category":
+                            df_clean[col] = df_clean[col].astype('category')
+                    except Exception as e:
+                        st.error(f"❌ Failed to convert '{col}' to {new_dtype}: {e}")
 
             # Preview Cleaned Data
             st.markdown("### ✅ Cleaned Dataset Preview")
