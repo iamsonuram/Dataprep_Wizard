@@ -4,7 +4,7 @@ import json
 import matplotlib.pyplot as plt
 import seaborn as sns
 import io
-
+import uuid
 
 # Set page config
 st.set_page_config(page_title="Data Quality & EDA App", layout="wide")
@@ -17,18 +17,18 @@ st.markdown("Upload your dataset to begin exploring and checking its quality.")
 uploaded_file = st.file_uploader("Upload your file", type=["csv", "xlsx", "xls", "json"])
 
 # Load dataset based on file type
-def load_dataset(file):
+def load_dataset(file, has_headers):
     try:
         if file.name.endswith('.csv'):
-            df = pd.read_csv(file, header=None)  # Force no header for now
+            df = pd.read_csv(file, header=0 if has_headers else None)
         elif file.name.endswith('.xlsx') or file.name.endswith('.xls'):
-            df = pd.read_excel(file, header=None)
+            df = pd.read_excel(file, header=0 if has_headers else None)
         elif file.name.endswith('.json'):
             df = pd.read_json(file)
             return df, False  # JSON always has headers
         else:
             return None, False
-        return df, True  # Marked as potentially needing header fix
+        return df, not has_headers  # Marked as needing header fix if no headers
     except Exception as e:
         st.error(f"Error loading file: {e}")
         return None, False
@@ -39,7 +39,6 @@ def headers_suspect(df):
         return True
     return False
 
-# Add this function after `load_dataset()`
 def check_data_quality(df):
     report = []
 
@@ -105,16 +104,21 @@ def check_data_quality(df):
 
     return pd.DataFrame(report)
 
-
 # Main App Logic
 if uploaded_file:
-    df, needs_header_fix = load_dataset(uploaded_file)
+    # Ask user if the dataset has headers
+    has_headers = st.radio(
+        "Does your dataset include headers in the first row?",
+        ["Yes", "No"],
+        index=0
+    )
+
+    df, needs_header_fix = load_dataset(uploaded_file, has_headers == "Yes")
 
     if df is not None:
         st.success("✅ File successfully loaded!")
-        if needs_header_fix and headers_suspect(df):
-            st.warning("🚨 No headers detected or headers look incorrect.")
-
+        if needs_header_fix:
+            st.warning("🚨 No headers detected. Please provide column headers.")
             default_headers = [f"Column_{i}" for i in range(df.shape[1])]
             header_input = st.text_input(
                 f"Enter comma-separated headers for {df.shape[1]} columns:",
@@ -127,8 +131,22 @@ if uploaded_file:
                     df.columns = headers
                 else:
                     st.error("❌ Number of headers does not match number of columns!")
+        elif headers_suspect(df):
+            st.warning("🚨 Headers look suspicious (e.g., unnamed or numeric).")
+            update_headers = st.checkbox("Update column headers?")
+            if update_headers:
+                default_headers = [f"Column_{i}" for i in range(df.shape[1])]
+                header_input = st.text_input(
+                    f"Enter comma-separated headers for {df.shape[1]} columns:",
+                    value=",".join(default_headers)
+                )
+                if header_input:
+                    headers = [h.strip() for h in header_input.split(",")]
+                    if len(headers) == df.shape[1]:
+                        df.columns = headers
+                    else:
+                        st.error("❌ Number of headers does not match number of columns!")
 
-        # Tabs: Preview | Quality Check (To be added later)
         # Tabs for various views
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📁 Preview Dataset",
@@ -202,39 +220,90 @@ if uploaded_file:
 
             # Missing Values Handling
             st.markdown("### 1. 🕳 Handle Missing Values")
-            missing_action = st.radio("Select action for missing values:", 
-                                    ["Do Nothing", "Drop Rows", "Fill with Mean", "Fill with Median", "Fill with Mode"])
+            null_cols = df_clean.columns[df_clean.isnull().any()].tolist()
+            if null_cols:
+                selected_null_col = st.selectbox("Select a column with missing values:", null_cols)
+                missing_action = st.radio(
+                    f"Select action for missing values in '{selected_null_col}':",
+                    ["Do Nothing", "Drop Rows", "Fill with Mean", "Fill with Median", "Fill with Mode", "Add Values Manually"],
+                    key=f"missing_action_{selected_null_col}"
+                )
 
-            if missing_action == "Drop Rows":
-                df_clean = df_clean.dropna()
-            elif missing_action == "Fill with Mean":
-                df_clean = df_clean.fillna(df_clean.mean(numeric_only=True))
-            elif missing_action == "Fill with Median":
-                df_clean = df_clean.fillna(df_clean.median(numeric_only=True))
-            elif missing_action == "Fill with Mode":
-                for col in df_clean.columns:
-                    if df_clean[col].isnull().sum() > 0:
-                        df_clean[col] = df_clean[col].fillna(df_clean[col].mode()[0])
+                if missing_action == "Drop Rows":
+                    df_clean = df_clean.dropna(subset=[selected_null_col])
+                elif missing_action == "Fill with Mean" and pd.api.types.is_numeric_dtype(df_clean[selected_null_col]):
+                    df_clean[selected_null_col] = df_clean[selected_null_col].fillna(df_clean[selected_null_col].mean())
+                elif missing_action == "Fill with Median" and pd.api.types.is_numeric_dtype(df_clean[selected_null_col]):
+                    df_clean[selected_null_col] = df_clean[selected_null_col].fillna(df_clean[selected_null_col].median())
+                elif missing_action == "Fill with Mode":
+                    df_clean[selected_null_col] = df_clean[selected_null_col].fillna(df_clean[selected_null_col].mode()[0])
+                elif missing_action == "Add Values Manually":
+                    manual_value = st.text_input(f"Enter a value to fill missing entries in '{selected_null_col}':", key=f"manual_{selected_null_col}")
+                    if manual_value:
+                        try:
+                            # Try to convert to numeric if the column is numeric
+                            if pd.api.types.is_numeric_dtype(df_clean[selected_null_col]):
+                                manual_value = float(manual_value)
+                            df_clean[selected_null_col] = df_clean[selected_null_col].fillna(manual_value)
+                        except ValueError:
+                            st.error("❌ Invalid value for the column type.")
+            else:
+                st.info("No columns with missing values found.")
 
             # Duplicate Rows
             st.markdown("### 2. 🧬 Remove Duplicate Rows")
-            if st.checkbox("Drop duplicate rows"):
-                df_clean = df_clean.drop_duplicates()
+            if df_clean.duplicated().sum() > 0:
+                dup_cols = st.multiselect(
+                    "Select columns to check for duplicates (all columns if none selected):",
+                    df_clean.columns.tolist(),
+                    key="dup_cols"
+                )
+                if st.button("Drop duplicate rows", key="drop_duplicates"):
+                    if dup_cols:
+                        df_clean = df_clean.drop_duplicates(subset=dup_cols)
+                    else:
+                        df_clean = df_clean.drop_duplicates()
+            else:
+                st.info("No duplicate rows found.")
 
             # Constant Columns
             st.markdown("### 3. 🧱 Remove Constant Columns")
-            if st.checkbox("Drop constant columns (only one unique value)"):
-                constant_cols = [col for col in df_clean.columns if df_clean[col].nunique() <= 1]
-                df_clean = df_clean.drop(columns=constant_cols)
+            constant_cols = [col for col in df_clean.columns if df_clean[col].nunique(dropna=False) <= 1]
+            if constant_cols:
+                selected_const_cols = st.multiselect(
+                    "Select constant columns to remove:",
+                    constant_cols,
+                    key="const_cols"
+                )
+                if st.button("Drop selected constant columns", key="drop_constant"):
+                    df_clean = df_clean.drop(columns=selected_const_cols)
+            else:
+                st.info("No constant columns found.")
 
             # Object to Numeric Conversion
             st.markdown("### 4. 🔁 Convert Object Columns to Numeric (if possible)")
-            if st.checkbox("Convert eligible object columns to numeric"):
-                for col in df_clean.select_dtypes(include='object').columns:
-                    try:
-                        df_clean[col] = pd.to_numeric(df_clean[col])
-                    except:
-                        pass
+            object_cols = df_clean.select_dtypes(include='object').columns.tolist()
+            convertible_cols = []
+            for col in object_cols:
+                try:
+                    pd.to_numeric(df_clean[col])
+                    convertible_cols.append(col)
+                except:
+                    pass
+            if convertible_cols:
+                selected_obj_cols = st.multiselect(
+                    "Select object columns to convert to numeric:",
+                    convertible_cols,
+                    key="obj_cols"
+                )
+                if st.button("Convert selected columns to numeric", key="convert_numeric"):
+                    for col in selected_obj_cols:
+                        try:
+                            df_clean[col] = pd.to_numeric(df_clean[col])
+                        except:
+                            pass
+            else:
+                st.info("No object columns can be converted to numeric.")
 
             # Preview Cleaned Data
             st.markdown("### ✅ Cleaned Dataset Preview")
@@ -255,10 +324,6 @@ if uploaded_file:
             elif file_type == "JSON":
                 cleaned_data = df_clean.to_json(orient="records").encode("utf-8")
                 st.download_button("Download JSON", cleaned_data, "cleaned_data.json", "application/json")
-
-        
-    else:
-        st.error("❌ Failed to load dataset.")
 
 else:
     st.info("📎 Please upload a dataset file to proceed.")
