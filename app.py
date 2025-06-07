@@ -174,7 +174,7 @@ if uploaded_file:
         with tab1:
             st.subheader("🔍 Dataset Preview")
             st.write(f"Shape: {df.shape[0]} rows × {df.shape[1]} columns")
-            st.dataframe(df.head())
+            st.dataframe(df)
 
         with tab2:
             st.subheader("📈 Descriptive Statistics")
